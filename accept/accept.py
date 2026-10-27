@@ -110,7 +110,7 @@ OPTIONS: List[AcceptOption] = [
         label="Prospect",
         style=discord.ButtonStyle.green,
         add_roles=[1506363625273823463],  # <- REPLACE with your role IDs
-        remove_roles=[1506363634861998181],  # <- REPLACE (or use [] to remove nothing)
+        remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
         channel_id=[1506363845382246470],  # None = same channel the command was used in
         channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
         dm=DMConfig(
