@@ -46,6 +46,13 @@ def _id_list(value, what: str) -> List[int]:
         raise ValueError(f"{what} must be an ID or a list of IDs like [123, 456], got {value!r}")
 
 
+def _join_lines(value: Union[str, List[str], None]) -> Optional[str]:
+    """Let text be written as one string or as a list of lines (joined with line breaks)."""
+    if isinstance(value, (list, tuple)):
+        return "\n".join(str(line) for line in value)
+    return value
+
+
 @dataclass
 class DMConfig:
     """The embed that gets DM'd to the accepted user."""
@@ -53,10 +60,11 @@ class DMConfig:
     title: Optional[str] = None
     color: str = "#a68937"
     thumbnail_url: Optional[str] = None
-    entry: Optional[str] = None  # the main body text of the embed
+    entry: Union[str, List[str], None] = None  # main body text. A list = one line per item
     footer: Optional[str] = None
 
     def __post_init__(self) -> None:
+        self.entry = _join_lines(self.entry)
         # Fail loudly when the plugin loads instead of halfway through an accept.
         try:
             discord.Color.from_str(self.color)
@@ -87,11 +95,14 @@ class AcceptOption:
     label: str  # text on the button, also used as {option} in messages
     add_roles: List[int]  # role IDs to give
     remove_roles: List[int] = field(default_factory=list)  # role IDs to take away
+    # Members with ANY of these roles may use this option. Empty = anyone who can run .accept
+    allowed_roles: List[int] = field(default_factory=list)
     style: discord.ButtonStyle = discord.ButtonStyle.blurple
     # Where to announce: one channel ID, a list of IDs, or None for the channel .accept was used in
     channel_id: Union[int, List[int], None] = None
-    channel_message: str = DEFAULT_CHANNEL_MESSAGE
-    confirmation_message: str = DEFAULT_CONFIRMATION_MESSAGE  # sent in the channel .accept was used in
+    channel_message: Union[str, List[str]] = DEFAULT_CHANNEL_MESSAGE  # a list = one line per item
+    # Sent in the channel .accept was used in. A list = one line per item
+    confirmation_message: Union[str, List[str]] = DEFAULT_CONFIRMATION_MESSAGE
     dm: DMConfig = field(default_factory=DMConfig)
 
     announce_channels: List[int] = field(init=False, repr=False, default_factory=list)
@@ -99,7 +110,16 @@ class AcceptOption:
     def __post_init__(self) -> None:
         self.add_roles = _id_list(self.add_roles, f"'{self.label}' add_roles")
         self.remove_roles = _id_list(self.remove_roles, f"'{self.label}' remove_roles")
+        self.allowed_roles = _id_list(self.allowed_roles, f"'{self.label}' allowed_roles")
         self.announce_channels = _id_list(self.channel_id, f"'{self.label}' channel_id")
+        self.channel_message = _join_lines(self.channel_message)
+        self.confirmation_message = _join_lines(self.confirmation_message)
+
+    def can_use(self, member: discord.Member) -> bool:
+        """Whether this member's roles let them use this option."""
+        if not self.allowed_roles:
+            return True
+        return any(role.id in self.allowed_roles for role in member.roles)
 
 
 # =============================================================================
@@ -123,6 +143,20 @@ NAME_TIMEOUT = 120  # seconds the bot waits for you to type the new nickname
 # and {time} is shown in each reader's own timezone. In the DM they are plain text
 # (names, and {time} in UTC) because embed titles and footers can't show mentions.
 #
+# MULTI-LINE TEXT
+# entry, channel_message and confirmation_message can be a normal string or a
+# list with one item per line (use "" for a blank line):
+#     entry=["First line", "", "Third line"],
+# A plain "..." string can't be split across lines in Python (pressing Enter inside
+# the quotes is a syntax error). To break a line inside a single string, write \n.
+# Discord formatting works in the entry, e.g. **bold**, *italic*, > quotes.
+#
+# PERMISSIONS
+# allowed_roles: members with ANY of the listed roles may use that option, and it
+# only shows up on the panel for them. Use [] to let everyone who can run .accept
+# use it. This is strict: server owners and admins are not exempt unless they have
+# one of the listed roles.
+#
 # Add one AcceptOption(...) per button (max 24, one slot is kept for Cancel).
 # Copy a block to add another.
 # To find a role ID: Discord Settings > Advanced > Developer Mode, then
@@ -131,6 +165,7 @@ OPTIONS: List[AcceptOption] = [
     AcceptOption(
         label="Hangaround",
         style=discord.ButtonStyle.green,
+        allowed_roles=[1506363617082343424, 1506363618223198228],  # <- REPLACE. Who can use this option 
         add_roles=[1506363634861998181, 1506363674032476261],  # <- REPLACE with your role IDs
         remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
         channel_id=[1506363845382246470],  # None = same channel the command was used in
@@ -139,14 +174,15 @@ OPTIONS: List[AcceptOption] = [
         dm=DMConfig(
             title="Welcome!",
             color="#a68937",
-            thumbnail_url=None,
+            thumbnail_url="https://cdn.discordapp.com/attachments/1506363914550771742/1556464154146242642/2.png",
             entry="You have been accepted as a hangaround. Watch and learn.",
-            footer="Club Officer",
+            footer="Accepted by {moderator} on {time}",
         ),
     ),
     AcceptOption(
         label="Prospect",
         style=discord.ButtonStyle.green,
+        allowed_roles=[1506363617082343424, 1506363618223198228],  # <- REPLACE. Who can use this option
         add_roles=[1506363625273823463],  # <- REPLACE with your role IDs
         remove_roles=[1506363634861998181],  # <- REPLACE (or use [] to remove nothing)
         channel_id=[1506363845382246470],  # None = same channel the command was used in
@@ -155,14 +191,23 @@ OPTIONS: List[AcceptOption] = [
         dm=DMConfig(
             title="Welcome!",
             color="#a68937",
-            thumbnail_url=None,
-            entry="Congratulations on becoming a prospect. This is the last nice thing you will be told. Your whole job as a prospect is to do whatever a patched member tells you to do. You need to read our bylaws in <#1506363869595959477>. Ignorance is not acceptable. Also if you know nothing about the Motorcycle Club Community, ASK. Last but never least, **Never miss a chance to shut the fuck up.** You will sign this now. https://forms.gle/x8q5ajUmn6AwiKfr7 Your sponsor is {moderator}.",
-            footer="Club Officer",
+            thumbnail_url="https://cdn.discordapp.com/attachments/1506363914550771742/1556464154146242642/2.png",
+            entry=["Congratulations on becoming a prospect. This is the last nice thing you will be told.", 
+            "Your whole job as a prospect is to do whatever a patched member tells you to do.",
+            "You need to read our bylaws in <#1506363869595959477>.",
+            "Ignorance is not acceptable.",
+            "Also if you know nothing about the Motorcycle Club Community, ASK.",
+            "Last but never least, **Never miss a chance to shut the fuck up.**",
+            "You will sign this now. https://forms.gle/x8q5ajUmn6AwiKfr7",
+            "Your sponsor is {moderator}.",
+            ],
+            footer="Accepted by {moderator} on {time}",
         ),
     ),
     AcceptOption(
             label="Visitor",
             style=discord.ButtonStyle.green,
+            allowed_roles=[1506363617082343424, 1506363618223198228],  # <- REPLACE. Who can use this option
             add_roles=[1506363635738611722, 1506363674032476261],  # <- REPLACE with your role IDs
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
@@ -171,14 +216,15 @@ OPTIONS: List[AcceptOption] = [
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
-                thumbnail_url=None,
+                thumbnail_url="https://cdn.discordapp.com/attachments/1506363914550771742/1556464154146242642/2.png",
                 entry="You have been given access to limited access. Enjoy what you can.",
-                footer="Club Officer",
+                footer="Accepted by {moderator} on {time}",
             ),
         ),
     AcceptOption(
             label="Club Friend",
             style=discord.ButtonStyle.green,
+            allowed_roles=[1506363617082343424, 1506363618223198228],  # <- REPLACE. Who can use this option            
             add_roles=[1506363635738611722, 1506363631460290620],  # <- REPLACE with your role IDs
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
@@ -187,14 +233,15 @@ OPTIONS: List[AcceptOption] = [
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
-                thumbnail_url=None,
+                thumbnail_url="https://cdn.discordapp.com/attachments/1506363914550771742/1556464154146242642/2.png",
                 entry="You have been given access to server. ",
-                footer="Club Officer",
+                footer="Accepted by {moderator} on {time}",
             ),
         ),
     AcceptOption(
             label="Allied Club",
             style=discord.ButtonStyle.green,
+            allowed_roles=[1506363617082343424],  # <- REPLACE. Who can use this option 
             add_roles=[1506363629992284263, 1506363635738611722],  # <- REPLACE with your role IDs
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
@@ -203,9 +250,9 @@ OPTIONS: List[AcceptOption] = [
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
-                thumbnail_url=None,
+                thumbnail_url="https://cdn.discordapp.com/attachments/1506363914550771742/1556464154146242642/2.png",
                 entry="You have been accepted as a Member. Enjoy your stay!",
-                footer="Club Officer",
+                footer="Accepted by {moderator} on {time}",
             ),
         ),
 ]
@@ -281,6 +328,7 @@ class Accept(commands.Cog):
         """
         Accept a user by picking an option, which gives/removes roles, DMs them and announces it.
 
+        Which options you are offered depends on your roles.
         After picking, you will be asked what the user should be nicknamed.
         The panel, the command, and the nickname prompt are all cleaned up afterwards,
         and a confirmation is posted in the channel you used the command in.
@@ -296,8 +344,17 @@ class Accept(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
+        # Only offer the options this person's roles allow
+        options = [option for option in OPTIONS if option.can_use(ctx.author)]
+        if not options:
+            embed = discord.Embed(
+                description="You don't have the roles required to accept anyone to any option.",
+                color=self.bot.error_color,
+            )
+            return await ctx.send(embed=embed, delete_after=15)
+
         # 1. Ask which option to use
-        view = AcceptView(ctx, OPTIONS, timeout=PROMPT_TIMEOUT)
+        view = AcceptView(ctx, options, timeout=PROMPT_TIMEOUT)
         prompt = await ctx.send(
             f"What are you accepting {member.mention} to?",
             view=view,
