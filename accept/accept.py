@@ -131,6 +131,7 @@ REQUIRED_PERMISSION = PermissionLevel.MODERATOR
 
 PROMPT_TIMEOUT = 300  # seconds the button panel waits for a click
 NAME_TIMEOUT = 120  # seconds the bot waits for you to type the new nickname
+CONFIRMATION_DELETE_AFTER = 30  # seconds before the final "You have accepted..." message deletes itself (None = keep it)
 
 # Placeholders you can use in channel_message, confirmation_message, and in the
 # DM's title / entry / footer:
@@ -256,7 +257,6 @@ OPTIONS: List[AcceptOption] = [
             ),
         ),
 ]
-
 
 # =============================================================================
 #  BUTTON PANELS
@@ -551,7 +551,11 @@ class Accept(commands.Cog):
     async def _confirm(self, ctx: commands.Context, option: AcceptOption, values: Dict[str, str]) -> None:
         text = _fill(option.confirmation_message, **values)
         if text:
-            await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(
+                text,
+                delete_after=CONFIRMATION_DELETE_AFTER,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def _ask_and_set_nickname(
         self,
