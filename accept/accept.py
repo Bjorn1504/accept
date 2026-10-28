@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Awaitable, List, Optional, TYPE_CHECKING
+from typing import Awaitable, Dict, List, Optional, Union, TYPE_CHECKING
 
 import discord
 from discord.ext import commands
@@ -22,6 +22,28 @@ logger = getLogger(__name__)
 # =============================================================================
 
 DEFAULT_CHANNEL_MESSAGE = "{user} has been given {option} roles by {moderator}.\n{time}"
+DEFAULT_CONFIRMATION_MESSAGE = "You have accepted {user} as a {option}."
+
+
+def _fill(template: Optional[str], **values: str) -> Optional[str]:
+    """Replace {placeholders} without choking on any other braces in the text."""
+    if not template:
+        return template
+    for key, value in values.items():
+        template = template.replace("{" + key + "}", value)
+    return template
+
+
+def _id_list(value, what: str) -> List[int]:
+    """Accept None, a single ID, or a list of IDs, and always return a list of ints."""
+    if value is None:
+        return []
+    if isinstance(value, (int, str)):
+        value = [value]
+    try:
+        return [int(item) for item in value]
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} must be an ID or a list of IDs like [123, 456], got {value!r}")
 
 
 @dataclass
@@ -41,19 +63,20 @@ class DMConfig:
         except ValueError:
             raise ValueError(f"Invalid DM embed color: {self.color!r}. Use a format like '#a68937'.")
 
-    def build_embed(self) -> Optional[discord.Embed]:
+    def build_embed(self, values: Dict[str, str]) -> Optional[discord.Embed]:
+        title = _fill(self.title, **values)
+        entry = _fill(self.entry, **values)
+        footer = _fill(self.footer, **values)
+
         # Discord rejects completely empty embeds, so skip the DM if nothing is set.
-        if not (self.title or self.entry or self.thumbnail_url or self.footer):
+        if not (title or entry or self.thumbnail_url or footer):
             return None
-        embed = discord.Embed(
-            title=self.title,
-            description=self.entry,
-            color=discord.Color.from_str(self.color),
-        )
+
+        embed = discord.Embed(title=title, description=entry, color=discord.Color.from_str(self.color))
         if self.thumbnail_url:
             embed.set_thumbnail(url=self.thumbnail_url)
-        if self.footer:
-            embed.set_footer(text=self.footer)
+        if footer:
+            embed.set_footer(text=footer)
         return embed
 
 
@@ -61,13 +84,22 @@ class DMConfig:
 class AcceptOption:
     """One button on the .accept panel."""
 
-    label: str  # text on the button, also used as {option} in the channel message
+    label: str  # text on the button, also used as {option} in messages
     add_roles: List[int]  # role IDs to give
     remove_roles: List[int] = field(default_factory=list)  # role IDs to take away
     style: discord.ButtonStyle = discord.ButtonStyle.blurple
-    channel_id: Optional[int] = None  # where to announce. None = the channel .accept was used in
+    # Where to announce: one channel ID, a list of IDs, or None for the channel .accept was used in
+    channel_id: Union[int, List[int], None] = None
     channel_message: str = DEFAULT_CHANNEL_MESSAGE
+    confirmation_message: str = DEFAULT_CONFIRMATION_MESSAGE  # sent in the channel .accept was used in
     dm: DMConfig = field(default_factory=DMConfig)
+
+    announce_channels: List[int] = field(init=False, repr=False, default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.add_roles = _id_list(self.add_roles, f"'{self.label}' add_roles")
+        self.remove_roles = _id_list(self.remove_roles, f"'{self.label}' remove_roles")
+        self.announce_channels = _id_list(self.channel_id, f"'{self.label}' channel_id")
 
 
 # =============================================================================
@@ -80,13 +112,19 @@ REQUIRED_PERMISSION = PermissionLevel.MODERATOR
 PROMPT_TIMEOUT = 300  # seconds the button panel waits for a click
 NAME_TIMEOUT = 120  # seconds the bot waits for you to type the new nickname
 
-# Channel message placeholders:
-#   {user}       mention of the accepted user
+# Placeholders you can use in channel_message, confirmation_message, and in the
+# DM's title / entry / footer:
+#   {user}       the accepted user
 #   {option}     the button's label
-#   {moderator}  mention of whoever ran the command
-#   {time}       date and time (shown in each reader's own timezone)
+#   {moderator}  whoever ran the command
+#   {time}       date and time
 #
-# Add one AcceptOption(...) per button (max 25). Copy a block to add another.
+# In channel_message and confirmation_message, {user} and {moderator} are mentions
+# and {time} is shown in each reader's own timezone. In the DM they are plain text
+# (names, and {time} in UTC) because embed titles and footers can't show mentions.
+#
+# Add one AcceptOption(...) per button (max 24, one slot is kept for Cancel).
+# Copy a block to add another.
 # To find a role ID: Discord Settings > Advanced > Developer Mode, then
 # right-click the role in Server Settings > Roles > Copy Role ID.
 OPTIONS: List[AcceptOption] = [
@@ -97,6 +135,7 @@ OPTIONS: List[AcceptOption] = [
         remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
         channel_id=[1506363845382246470],  # None = same channel the command was used in
         channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
+        confirmation_message="You have accepted {user} as a {option}.",
         dm=DMConfig(
             title="Welcome!",
             color="#a68937",
@@ -112,6 +151,7 @@ OPTIONS: List[AcceptOption] = [
         remove_roles=[1506363634861998181],  # <- REPLACE (or use [] to remove nothing)
         channel_id=[1506363845382246470],  # None = same channel the command was used in
         channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
+        confirmation_message="You have accepted {user} as a {option}.",
         dm=DMConfig(
             title="Welcome!",
             color="#a68937",
@@ -127,6 +167,7 @@ OPTIONS: List[AcceptOption] = [
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
             channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
+            confirmation_message="You have accepted {user} as a {option}.",
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
@@ -142,6 +183,7 @@ OPTIONS: List[AcceptOption] = [
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
             channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
+            confirmation_message="You have accepted {user} as a {option}.",
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
@@ -157,6 +199,7 @@ OPTIONS: List[AcceptOption] = [
             remove_roles=[1506363671637393449],  # <- REPLACE (or use [] to remove nothing)
             channel_id=[1506363845382246470],  # None = same channel the command was used in
             channel_message="{user} has been given {option} roles by {moderator}.\n{time}",
+            confirmation_message="You have accepted {user} as a {option}.",
             dm=DMConfig(
                 title="Welcome!",
                 color="#a68937",
@@ -169,8 +212,34 @@ OPTIONS: List[AcceptOption] = [
 
 
 # =============================================================================
-#  BUTTON PANEL
+#  BUTTON PANELS
 # =============================================================================
+
+
+class PanelView(discord.ui.View):
+    """Base view: only the person who ran the command may use it."""
+
+    def __init__(self, ctx: commands.Context, *, timeout: Optional[float]):
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.cancelled: bool = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.ctx.author.id:
+            return True
+        await interaction.response.send_message("This panel cannot be controlled by you!", ephemeral=True)
+        return False
+
+
+class CancelButton(discord.ui.Button["PanelView"]):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.red)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await interaction.response.defer()
+        self.view.cancelled = True
+        self.view.stop()
 
 
 class OptionButton(discord.ui.Button["AcceptView"]):
@@ -185,31 +254,18 @@ class OptionButton(discord.ui.Button["AcceptView"]):
         self.view.stop()
 
 
-class AcceptView(discord.ui.View):
+class AcceptView(PanelView):
     def __init__(self, ctx: commands.Context, options: List[AcceptOption], *, timeout: float):
-        super().__init__(timeout=timeout)
-        self.ctx = ctx
+        super().__init__(ctx, timeout=timeout)
         self.selected: Optional[AcceptOption] = None
         for option in options:
             self.add_item(OptionButton(option))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.ctx.author.id:
-            return True
-        await interaction.response.send_message("This panel cannot be controlled by you!", ephemeral=True)
-        return False
+        self.add_item(CancelButton())
 
 
 # =============================================================================
 #  COG
 # =============================================================================
-
-
-def _fill(template: str, **values: str) -> str:
-    """Replace {placeholders} without choking on any other braces in the text."""
-    for key, value in values.items():
-        template = template.replace("{" + key + "}", value)
-    return template
 
 
 class Accept(commands.Cog):
@@ -226,7 +282,8 @@ class Accept(commands.Cog):
         Accept a user by picking an option, which gives/removes roles, DMs them and announces it.
 
         After picking, you will be asked what the user should be nicknamed.
-        The panel, the command, and the nickname prompt are all cleaned up afterwards.
+        The panel, the command, and the nickname prompt are all cleaned up afterwards,
+        and a confirmation is posted in the channel you used the command in.
 
         If any step fails, a message listing exactly what went wrong stays in the channel.
 
@@ -249,21 +306,36 @@ class Accept(commands.Cog):
         await view.wait()
 
         option = view.selected
-        if option is None:  # nobody clicked in time
+        if option is None:  # cancelled, or nobody clicked in time
             await self._delete(prompt, ctx.message)
+            outcome = "cancelled" if view.cancelled else "timed out"
             await ctx.send(
-                f"Accepting {member.mention} timed out.",
+                f"Accepting {member.mention} {outcome}.",
                 delete_after=10,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
 
+        now = discord.utils.utcnow()
+        rich = {  # for normal messages: real mentions and a timestamp that adapts to the reader
+            "user": member.mention,
+            "option": option.label,
+            "moderator": ctx.author.mention,
+            "time": discord.utils.format_dt(now, style="F"),
+        }
+        plain = {  # for embed titles/footers, which can't render mentions or timestamps
+            "user": member.display_name,
+            "option": option.label,
+            "moderator": ctx.author.display_name,
+            "time": now.strftime("%d %b %Y, %H:%M UTC"),
+        }
+
         # 2. Roles, DM and channel announcement. Each step runs on its own, so
         #    one failing can never stop the others.
         problems: List[str] = []
         await self._run(problems, "Changing roles", self._apply_roles(ctx, member, option, problems))
-        await self._run(problems, "Sending the DM", self._send_dm(member, option))
-        await self._run(problems, "Posting the announcement", self._announce(ctx, member, option, problems))
+        await self._run(problems, "Sending the DM", self._send_dm(member, option, plain, problems))
+        await self._run(problems, "Posting the announcement", self._announce(ctx, member, option, rich, problems))
 
         # 3. Clear the panel and the command, and show anything that went wrong
         await self._delete(prompt, ctx.message)
@@ -271,6 +343,9 @@ class Accept(commands.Cog):
 
         # 4. Ask for a nickname and apply it
         await self._run(problems, "Renaming", self._ask_and_set_nickname(ctx, member, problems))
+
+        # 5. Confirmation in the channel the command was used in
+        await self._run(problems, "Sending the confirmation", self._confirm(ctx, option, rich))
         await self._report(ctx, problems)
 
     # ------------------------------------------------------------------ helpers
@@ -370,44 +445,56 @@ class Accept(commands.Cog):
             return
         logger.info(f"Accept: {verb} {role.name} ({role.id}) for {member} ({member.id})")
 
-    async def _send_dm(self, member: discord.Member, option: AcceptOption) -> None:
-        embed = option.dm.build_embed()
+    async def _send_dm(
+        self,
+        member: discord.Member,
+        option: AcceptOption,
+        values: Dict[str, str],
+        problems: List[str],
+    ) -> None:
+        embed = option.dm.build_embed(values)
         if embed is None:
             return
         try:
             await member.send(embed=embed)
         except discord.Forbidden:
-            # Closed DMs are common, so this isn't treated as a crash. Re-raise as a readable note.
-            raise RuntimeError("their DMs are closed (or they blocked the bot)")
+            problems.append(f"Couldn't DM {member.mention}: their DMs are closed (or they blocked the bot).")
+        except discord.HTTPException as exc:
+            problems.append(f"Couldn't DM {member.mention}: {exc}")
 
     async def _announce(
         self,
         ctx: commands.Context,
         member: discord.Member,
         option: AcceptOption,
+        values: Dict[str, str],
         problems: List[str],
     ) -> None:
-        channel = ctx.guild.get_channel(option.channel_id) if option.channel_id else None
-        if not isinstance(channel, discord.abc.Messageable):
-            if option.channel_id:
-                problems.append(
-                    f"Channel ID `{option.channel_id}` wasn't found or isn't a text channel, "
-                    "so I used the current channel instead."
-                )
-            channel = ctx.channel
+        text = _fill(option.channel_message, **values)
+        if not text:
+            return
 
-        text = _fill(
-            option.channel_message,
-            user=member.mention,
-            option=option.label,
-            moderator=ctx.author.mention,
-            time=discord.utils.format_dt(discord.utils.utcnow(), style="F"),
-        )
-        try:
-            # Only the accepted user gets pinged, not the moderator.
-            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=[member]))
-        except discord.HTTPException as exc:
-            problems.append(f"Couldn't send the announcement in {channel.mention}: {exc}")
+        channels = []
+        for channel_id in option.announce_channels:
+            channel = ctx.guild.get_channel_or_thread(channel_id)
+            if isinstance(channel, discord.abc.Messageable):
+                channels.append(channel)
+            else:
+                problems.append(f"Channel ID `{channel_id}` wasn't found or isn't a text channel.")
+        if not channels:  # nothing configured (or nothing valid): use the current channel
+            channels = [ctx.channel]
+
+        for channel in channels:
+            try:
+                # Only the accepted user gets pinged, not the moderator.
+                await channel.send(text, allowed_mentions=discord.AllowedMentions(users=[member]))
+            except discord.HTTPException as exc:
+                problems.append(f"Couldn't send the announcement in {channel.mention}: {exc}")
+
+    async def _confirm(self, ctx: commands.Context, option: AcceptOption, values: Dict[str, str]) -> None:
+        text = _fill(option.confirmation_message, **values)
+        if text:
+            await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
 
     async def _ask_and_set_nickname(
         self,
@@ -415,8 +502,11 @@ class Accept(commands.Cog):
         member: discord.Member,
         problems: List[str],
     ) -> None:
+        view = PanelView(ctx, timeout=None)  # we handle the timeout ourselves below
+        view.add_item(CancelButton())
         prompt = await ctx.send(
             f"What will {member.mention} be named?",
+            view=view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
         cleanup: List[discord.Message] = [prompt]
@@ -425,10 +515,28 @@ class Accept(commands.Cog):
             return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
 
         nickname: Optional[str] = None
+        cancel_task = asyncio.ensure_future(view.wait())
+        reply_task: Optional[asyncio.Future] = None
         try:
             while nickname is None:
-                reply = await self.bot.wait_for("message", check=check, timeout=NAME_TIMEOUT)
-                cleanup.append(reply)
+                # Wait for either a typed reply or a click on Cancel, whichever comes first.
+                reply_task = asyncio.ensure_future(self.bot.wait_for("message", check=check))
+                done, _ = await asyncio.wait(
+                    {reply_task, cancel_task},
+                    timeout=NAME_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                reply = reply_task.result() if reply_task in done else None
+                if reply is not None:
+                    cleanup.append(reply)
+
+                if view.cancelled:
+                    break
+                if reply is None:
+                    problems.append("No name was given in time, so the nickname was left unchanged.")
+                    break
+
                 name = reply.content.strip()
                 if not name:
                     continue
@@ -438,8 +546,11 @@ class Accept(commands.Cog):
                     )
                     continue
                 nickname = name
-        except asyncio.TimeoutError:
-            problems.append("No name was given in time, so the nickname was left unchanged.")
+        finally:
+            if reply_task is not None and not reply_task.done():
+                reply_task.cancel()
+            cancel_task.cancel()
+            view.stop()
 
         if nickname:
             try:
@@ -455,6 +566,6 @@ class Accept(commands.Cog):
 
 
 async def setup(bot: ModmailBot) -> None:
-    if len(OPTIONS) > 25:
-        raise ValueError("Discord only allows 25 buttons on a message; reduce OPTIONS to 25 or fewer.")
+    if len(OPTIONS) > 24:
+        raise ValueError("Discord allows 25 buttons per message and one is used for Cancel; use 24 options or fewer.")
     await bot.add_cog(Accept(bot))
